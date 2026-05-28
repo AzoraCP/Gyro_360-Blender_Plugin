@@ -45,6 +45,8 @@ class GYRO360_Properties(PropertyGroup):
         update=_update_resolution
     )
 
+    // Custom resolution fields (only used if 'CUSTOM' is selected)
+
     custom_width: IntProperty(
         name="Width", default=2048, min=64, max=16384, update=_update_resolution
     )

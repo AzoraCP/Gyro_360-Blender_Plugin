@@ -1,15 +1,69 @@
 import threading
 import socket
 import os
+import ssl
+import tempfile
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-# Global server state
 _server_instance = None
 _server_thread = None
 _current_image_path = ""
 _render_version = 0
+
+# Self-signed TLS cert (valid 10 years). iOS requires HTTPS for
+# DeviceOrientationEvent.requestPermission() to ever return 'granted'.
+_CERT_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIDCzCCAfOgAwIBAgIUfjNIiNBEBu+3r3wmikFCt+LpEIkwDQYJKoZIhvcNAQEL
+BQAwFTETMBEGA1UEAwwKMzYwcHJldmlldzAeFw0yNjA1MjgwODE1MzJaFw0zNjA1
+MjUwODE1MzJaMBUxEzARBgNVBAMMCjM2MHByZXZpZXcwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQC3ZlTWeh2c0tPuQLgIdWZpzA/xFYN58aVqxlDf4g3X
+wV3KArbn0tLISn/q5paS7oi32TZosOH1jbedBiyPKk/KzNTf3JgJGUg0PK7NOGWx
+Oi9wpeebHoqCtn8UVIRkzAUbr3Dbiedn9KXqhTk3swihWg8suXBXRc4eqMvnGrJm
+GMshdMLaWyS3aAwzMiCFfNwKJzyWnwLflz/UxcI8UGObYPlV5kZGsMuvLZbSEDTL
+6s6gLTkqRS522BVK5sLrqFtpbRqC03ekGdeCBnVH5QNSfOW9YeUTVAe1Cj0qdcKe
+DHMTDufGJAoPNo2fveOYs61XpTMg6ObuEMiFyJnLukr3AgMBAAGjUzBRMB0GA1Ud
+DgQWBBR7+uIICKaEjdCQ8fKXw+rhb+81ezAfBgNVHSMEGDAWgBR7+uIICKaEjdCQ
+8fKXw+rhb+81ezAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBO
+xpqNPFsphe2TPNz6DTVu1lGBifCK4wZ7WBkfeCybq+hZQvO74hUAv8usE2l1dG1k
+Ibyf/1gjAe69h2R+o8bzMrQvhs/cXLZVUqkAeSD5rbsxLutos0AZjiNCyKkDEnPJ
+h5beJULiJHL/uibk73iuCrPeZFERiH30ssf9rr0iJT2vFEPQFyoH3OBt/ycF8kIi
+cwkCSbzVOf8wFa+nWJmbfGTJmhKz1lBhSmpaG2dN7FZPijx2g+cb9ZrqM6AyRDBe
+jcsYzeeqVs8AWMKG1GXgs/0/dxmQ3RE8oVfdz875ogH7XQssDgq304FK6Nl98Mvo
+gEmal/vE1DdtqeW3iNpA
+-----END CERTIFICATE-----"""
+
+_KEY_PEM = """\
+-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC3ZlTWeh2c0tPu
+QLgIdWZpzA/xFYN58aVqxlDf4g3XwV3KArbn0tLISn/q5paS7oi32TZosOH1jbed
+BiyPKk/KzNTf3JgJGUg0PK7NOGWxOi9wpeebHoqCtn8UVIRkzAUbr3Dbiedn9KXq
+hTk3swihWg8suXBXRc4eqMvnGrJmGMshdMLaWyS3aAwzMiCFfNwKJzyWnwLflz/U
+xcI8UGObYPlV5kZGsMuvLZbSEDTL6s6gLTkqRS522BVK5sLrqFtpbRqC03ekGdeC
+BnVH5QNSfOW9YeUTVAe1Cj0qdcKeDHMTDufGJAoPNo2fveOYs61XpTMg6ObuEMiF
+yJnLukr3AgMBAAECggEAPa4L0EonlWuOXS2k9ytMsz4vCly66BMuF9f0sScckrh0
+q5D4JMVRoIz1snG0qFvS3UoPM2xxwhzUaNn/uHJ5fXIgEd3lwAGht/fErj5ObSlt
+dQxG9XNzD/0Chjraf+/hs+rwINWjXuH3vwTpNmNe/q0EN31yW9edN9B7KxFeeFlB
+QaY73BThGxpRdUBnf2luzXywcxNwmnFA1zFRj0LWAKYCB6FfKBJnU8k/N+DF/jtZ
+zPRXV3dgWI0dDeWXl/vpsy32qa3c6BcBWuMcl5UpBdgped05+SHMuNchErqQJcKo
+hnjMk1KYVeRkroSoJ/Rp8LUzO+jOkG+tPFLS5XlnMQKBgQD3uCNx5w7ig0C5B75O
+e4KezRpQ+bVmQ3UjhgH1MetPKZmpyp1+Fw6w8WeoOFCUVySSft359n9mvzhbN1Rf
+xd6use6rUAtM8ICXsTRUyJEf2CAILCbesbBla33lLbpDc2f4k/jl3QFGfPIMmKkA
+O/naE4oV2XJDxHjyZ5KvRKDxHwKBgQC9h8cAkqekGrlcoQ2UOkK8XMylLxu4rCPW
+f3+UNvS3TObWOI9DNzMTIacwFTmGVaePXodyctgBfV7r22VCJ7W/W3lxHnM1v2lt
+IzjIq6EMu8BgbhZ/n49VRjdt88sVy0m0xw8A1EAkPCjC60KqX5CbGImYIHL5JLZO
+PMekuEWzKQKBgCHxZUnyMyPugCvaV8VBP0CrMfPug2Cj1aUsc5A5atjKBngxfysL
+1cOBEIcIUGJDHovEPn5FvGdDxGEbT8BfyId/cgifSy0bt0MR0O3dHaWTY7A6/Ih/
+KIB9Hh8NCPy9D34MKIq2oboa3L/FG0Mg9Ldg/gbIaNPIVBpC/uJtMPBZAoGAUwCM
+cT7ItgCSHvPVO44MPeuyH8EytbyFcWGi4Kj0oPXHvhdE/l3FO2KoklEpQSBv4kS2
+srOCz5w1HruVa9RyLtyDobuBHw+1vvsG2jL3s9jhlhmANuIM5n56tednkCLYI5ht
+hKJveK7z9vEK4Aw8CwBC+eF0GJIwWLEbiZK9y4kCgYA1uRGt4exZEtMnPGiRiYHi
++wKLFg3c71rIPCB8og1guyTbhRKr6XJ5LMj6z31GPMVWW1tfEwCBaTrRWPrB6C3N
+8rUV7X3p30SnBQajzQlDqdg9oELc5ICJk7JaGjXxgaB6s4xM2ODhd8k7FklCRuW+
+LiWFiAmqZHqg0eSjMXDrgQ==
+-----END PRIVATE KEY-----"""
 
 
 def get_local_ip():
@@ -21,10 +75,28 @@ def get_local_ip():
         return ip
     except Exception:
         try:
-            hostname = socket.gethostname()
-            return socket.gethostbyname(hostname)
+            return socket.gethostbyname(socket.gethostname())
         except Exception:
             return "127.0.0.1"
+
+
+def _make_ssl_context():
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    td = tempfile.mkdtemp(prefix='gyro360_')
+    cp = os.path.join(td, 'cert.pem')
+    kp = os.path.join(td, 'key.pem')
+    with open(cp, 'w') as f:
+        f.write(_CERT_PEM)
+    with open(kp, 'w') as f:
+        f.write(_KEY_PEM)
+    ctx.load_cert_chain(cp, kp)
+    try:
+        os.unlink(cp)
+        os.unlink(kp)
+        os.rmdir(td)
+    except Exception:
+        pass
+    return ctx
 
 
 def set_image_path(path):
@@ -34,7 +106,6 @@ def set_image_path(path):
 
 
 def get_viewer_html():
-    """Three.js viewer with inverted drag and auto gyro permission popup."""
     return r'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -45,13 +116,14 @@ def get_viewer_html():
 <title>Gyro 360 Preview</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a0a;
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #0a0a0a;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-user-select: none; user-select: none;
     -webkit-tap-highlight-color: transparent;
   }
-  #canvas-container { width: 100%; height: 100%; position: relative; }
-  canvas { display: block; }
+  #pano { position: absolute; width: 100%; height: 100%; }
 
   #hud {
     position: fixed; top: 0; left: 0; right: 0;
@@ -60,18 +132,9 @@ def get_viewer_html():
     background: linear-gradient(to bottom, rgba(0,0,0,0.65), transparent);
     z-index: 100; pointer-events: none;
   }
-  #hud-title {
-    color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 600;
-    letter-spacing: 0.05em; text-transform: uppercase;
-  }
-  #hud-status {
-    display: flex; align-items: center; gap: 6px;
-    color: rgba(255,255,255,0.6); font-size: 11px;
-  }
-  #status-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: #4ade80; animation: pulse 2s infinite;
-  }
+  #hud-title { color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+  #hud-status { display: flex; align-items: center; gap: 6px; color: rgba(255,255,255,0.6); font-size: 11px; }
+  #status-dot { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; animation: pulse 2s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
   #controls {
@@ -82,81 +145,55 @@ def get_viewer_html():
     z-index: 100;
   }
   .ctrl-btn {
-    background: rgba(255,255,255,0.12);
-    border: 1px solid rgba(255,255,255,0.2);
-    color: white; border-radius: 20px;
-    padding: 10px 18px; font-size: 12px; font-weight: 600;
-    letter-spacing: 0.04em; cursor: pointer;
+    background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2);
+    color: white; border-radius: 20px; padding: 10px 18px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.04em; cursor: pointer;
     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     transition: all 0.2s; font-family: inherit; text-transform: uppercase;
     -webkit-tap-highlight-color: transparent;
   }
   .ctrl-btn:active { background: rgba(255,255,255,0.25); transform: scale(0.96); }
-  .ctrl-btn.active {
-    background: rgba(74,222,128,0.25);
-    border-color: rgba(74,222,128,0.55);
-    color: #4ade80;
-  }
+  .ctrl-btn.active { background: rgba(74,222,128,0.25); border-color: rgba(74,222,128,0.55); color: #4ade80; }
   .ctrl-btn.disabled { opacity: 0.4; pointer-events: none; }
 
   #gyro-popup {
     position: fixed; inset: 0;
-    background: rgba(10, 10, 10, 0.92);
+    background: rgba(10,10,10,0.92);
     backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 24px; z-index: 400; padding: 40px;
     animation: fadeIn 0.3s ease;
   }
   @keyframes fadeIn { from { opacity: 0; } }
-
   #gyro-popup .phone-icon {
-    width: 80px; height: 80px;
-    border: 2px solid #4ade80; border-radius: 16px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 40px;
+    width: 80px; height: 80px; border: 2px solid #4ade80; border-radius: 16px;
+    display: flex; align-items: center; justify-content: center; font-size: 40px;
     animation: phoneWiggle 2s ease-in-out infinite;
   }
-  @keyframes phoneWiggle {
-    0%, 100% { transform: rotate(-8deg); }
-    50% { transform: rotate(8deg); }
-  }
-  #gyro-popup h2 {
-    color: white; font-size: 22px; font-weight: 700;
-    text-align: center; letter-spacing: -0.01em;
-  }
-  #gyro-popup p {
-    color: rgba(255,255,255,0.65); font-size: 14px;
-    text-align: center; max-width: 280px; line-height: 1.5;
-  }
-  #gyro-popup .actions {
-    display: flex; flex-direction: column; gap: 10px;
-    width: 100%; max-width: 260px; margin-top: 8px;
-  }
+  @keyframes phoneWiggle { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+  #gyro-popup h2 { color: white; font-size: 22px; font-weight: 700; text-align: center; letter-spacing: -0.01em; }
+  #gyro-popup p { color: rgba(255,255,255,0.65); font-size: 14px; text-align: center; max-width: 280px; line-height: 1.5; }
+  #gyro-popup .actions { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 260px; margin-top: 8px; }
   #gyro-popup .btn-primary {
-    background: #4ade80; color: #0a0a0a; border: none;
-    border-radius: 24px; padding: 16px 32px;
-    font-size: 15px; font-weight: 700; cursor: pointer;
-    letter-spacing: 0.03em; font-family: inherit;
-    box-shadow: 0 8px 24px rgba(74, 222, 128, 0.3);
+    background: #4ade80; color: #0a0a0a; border: none; border-radius: 24px;
+    padding: 16px 32px; font-size: 15px; font-weight: 700; cursor: pointer;
+    letter-spacing: 0.03em; font-family: inherit; box-shadow: 0 8px 24px rgba(74,222,128,0.3);
   }
   #gyro-popup .btn-primary:active { transform: scale(0.97); }
   #gyro-popup .btn-secondary {
-    background: transparent; color: rgba(255,255,255,0.5);
-    border: none; padding: 12px;
-    font-size: 13px; cursor: pointer; font-family: inherit;
+    background: transparent; color: rgba(255,255,255,0.5); border: none;
+    padding: 12px; font-size: 13px; cursor: pointer; font-family: inherit;
     text-decoration: underline; text-underline-offset: 3px;
   }
 
   #loading {
     position: fixed; inset: 0; background: #0a0a0a;
-    display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 16px; z-index: 300;
-    transition: opacity 0.4s;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; z-index: 300; transition: opacity 0.4s;
   }
   #loading-ring {
     width: 48px; height: 48px; border: 3px solid rgba(255,255,255,0.1);
-    border-top-color: #4ade80; border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+    border-top-color: #4ade80; border-radius: 50%; animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   #loading p { color: rgba(255,255,255,0.55); font-size: 13px; }
@@ -174,14 +211,14 @@ def get_viewer_html():
   #toast {
     position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
     background: rgba(0,0,0,0.85); color: white; padding: 10px 18px;
-    border-radius: 16px; font-size: 12px; z-index: 200;
-    display: none; backdrop-filter: blur(10px);
-    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 16px; font-size: 12px; z-index: 200; display: none;
+    backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.15);
     max-width: 80vw; text-align: center;
   }
 </style>
 </head>
 <body>
+
 <div id="loading">
   <div id="loading-ring"></div>
   <p>Loading 360° Preview...</p>
@@ -197,7 +234,7 @@ def get_viewer_html():
   </div>
 </div>
 
-<div id="canvas-container"></div>
+<div id="pano"></div>
 
 <div id="hud">
   <div id="hud-title">360° Preview</div>
@@ -215,300 +252,176 @@ def get_viewer_html():
   <button class="ctrl-btn" id="btn-reset">Reset</button>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="/marzipano.js"></script>
 <script>
-(function() {
+(function () {
   'use strict';
 
-  let renderer, camera, scene, sphere;
-  let isGyroEnabled = false;
-  let renderVersion = 0;
+  var viewer, geometry, limiter, view, scene;
+  var deviceOrientationMethod, controls;
+  var gyroEnabled = false;
+  var renderVersion = 0;
+  var splashHidden = false;
 
-  let isDragging = false;
-  let lastX = 0, lastY = 0;
-  let pointerYaw = 0;
-  let pointerPitch = 0;
-  const PITCH_LIMIT = Math.PI * 0.49;
-  const DRAG_SENSITIVITY = 0.005;
-
-  let gyroYaw = 0, gyroPitch = 0;
-  let gyroBaseAlpha = null, gyroBaseBeta = null;
-  let smoothGyroYaw = 0, smoothGyroPitch = 0;
-  const GYRO_SMOOTH = 0.15;
+  // ── Utilities ────────────────────────────────────────────────────────────
 
   function toast(msg, ms) {
-    const el = document.getElementById('toast');
+    var el = document.getElementById('toast');
     el.textContent = msg;
     el.style.display = 'block';
     clearTimeout(el._t);
-    el._t = setTimeout(() => { el.style.display = 'none'; }, ms || 2500);
-  }
-
-  function maybeShowGyroPopup() {
-    if (typeof DeviceOrientationEvent === 'undefined') return;
-    if (typeof DeviceOrientationEvent.requestPermission !== 'function') return;
-    if (sessionStorage.getItem('gyro_asked') === '1') return;
-
-    document.getElementById('gyro-popup').style.display = 'flex';
-
-    document.getElementById('popup-enable').addEventListener('click', async () => {
-      try {
-        const state = await DeviceOrientationEvent.requestPermission();
-        sessionStorage.setItem('gyro_asked', '1');
-        document.getElementById('gyro-popup').style.display = 'none';
-        if (state === 'granted') {
-          enableGyro();
-        } else {
-          toast('Gyroscope denied. You can still use touch.', 4000);
-        }
-      } catch (err) {
-        sessionStorage.setItem('gyro_asked', '1');
-        document.getElementById('gyro-popup').style.display = 'none';
-        toast('Gyroscope error: ' + err.message, 4000);
-      }
-    });
-
-    document.getElementById('popup-skip').addEventListener('click', () => {
-      sessionStorage.setItem('gyro_asked', '1');
-      document.getElementById('gyro-popup').style.display = 'none';
-    });
-  }
-
-  function init() {
-    const container = document.getElementById('canvas-container');
-
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    container.appendChild(renderer.domElement);
-
-    scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 0, 0);
-
-    const geometry = new THREE.SphereGeometry(500, 60, 40);
-    geometry.scale(-1, 1, 1);
-
-    const texture = new THREE.TextureLoader().load(
-      '/image?v=' + Date.now(),
-      function(tex) {
-        tex.minFilter = THREE.LinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        hideSplash();
-        maybeShowGyroPopup();
-      },
-      undefined,
-      function() {
-        hideSplash();
-        maybeShowGyroPopup();
-        toast('No render available yet — render in Blender first');
-      }
-    );
-
-    const material = new THREE.MeshBasicMaterial({ map: texture });
-    sphere = new THREE.Mesh(geometry, material);
-    scene.add(sphere);
-
-    window.addEventListener('resize', onResize);
-    setupPointerControls();
-    setupGyroButton();
-    startPolling();
-    animate();
+    el._t = setTimeout(function () { el.style.display = 'none'; }, ms || 2500);
   }
 
   function hideSplash() {
-    const el = document.getElementById('loading');
+    if (splashHidden) return;
+    splashHidden = true;
+    var el = document.getElementById('loading');
     if (el) {
       el.style.opacity = '0';
-      setTimeout(() => el.remove(), 400);
+      setTimeout(function () { el.remove(); }, 400);
     }
   }
 
-  function animate() {
-    requestAnimationFrame(animate);
+  // ── Gyroscope ────────────────────────────────────────────────────────────
 
-    if (isGyroEnabled) {
-      smoothGyroYaw   += (gyroYaw   - smoothGyroYaw)   * GYRO_SMOOTH;
-      smoothGyroPitch += (gyroPitch - smoothGyroPitch) * GYRO_SMOOTH;
-    }
-
-    const finalYaw   = isGyroEnabled ? (smoothGyroYaw + pointerYaw)   : pointerYaw;
-    let   finalPitch = isGyroEnabled ? (smoothGyroPitch + pointerPitch) : pointerPitch;
-    finalPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, finalPitch));
-
-    camera.rotation.order = 'YXZ';
-    camera.rotation.y = finalYaw;
-    camera.rotation.x = finalPitch;
-    camera.rotation.z = 0;
-
-    renderer.render(scene, camera);
-  }
-
-  function setupPointerControls() {
-    const el = renderer.domElement;
-
-    function start(x, y) {
-      isDragging = true;
-      lastX = x; lastY = y;
-    }
-    function move(x, y) {
-      if (!isDragging) return;
-      const dx = x - lastX;
-      const dy = y - lastY;
-      lastX = x; lastY = y;
-
-      // INVERTED — image follows finger
-      pointerYaw   += dx * DRAG_SENSITIVITY;
-      pointerPitch += dy * DRAG_SENSITIVITY;
-      pointerPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pointerPitch));
-    }
-    function end() { isDragging = false; }
-
-    el.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 1) {
-        start(e.touches[0].clientX, e.touches[0].clientY);
-        e.preventDefault();
-      }
-    }, { passive: false });
-
-    el.addEventListener('touchmove', (e) => {
-      if (e.touches.length === 1) {
-        move(e.touches[0].clientX, e.touches[0].clientY);
-        e.preventDefault();
-      }
-    }, { passive: false });
-
-    el.addEventListener('touchend', end);
-    el.addEventListener('touchcancel', end);
-
-    el.addEventListener('mousedown', (e) => start(e.clientX, e.clientY));
-    window.addEventListener('mousemove', (e) => move(e.clientX, e.clientY));
-    window.addEventListener('mouseup', end);
-  }
-
-  function setupGyroButton() {
-    const btn = document.getElementById('btn-gyro');
-
-    if (!('DeviceOrientationEvent' in window)) {
-      btn.textContent = 'No Gyro';
-      btn.classList.add('disabled');
+  function maybeShowGyroPopup() {
+    if (typeof DeviceOrientationEvent === 'undefined') return;
+    // Non-iOS: enable automatically without a popup
+    if (typeof DeviceOrientationEvent.requestPermission !== 'function') {
+      doEnableGyro();
       return;
     }
-
-    btn.addEventListener('click', async () => {
-      if (isGyroEnabled) {
-        disableGyro();
-        return;
-      }
-      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-        try {
-          const state = await DeviceOrientationEvent.requestPermission();
-          if (state === 'granted') {
-            enableGyro();
-          } else {
-            toast('Permission denied. Settings > Safari > Motion & Orientation Access', 5000);
-          }
-        } catch (err) {
-          toast('Gyro error: ' + err.message, 4000);
-        }
-      } else {
-        enableGyro();
-      }
-    });
+    if (sessionStorage.getItem('gyro_asked') === '1') return;
+    document.getElementById('gyro-popup').style.display = 'flex';
   }
 
-  function enableGyro() {
-    isGyroEnabled = true;
-    gyroBaseAlpha = null;
-    gyroBaseBeta = null;
-    window.addEventListener('deviceorientation', onDeviceOrientation, true);
-    const btn = document.getElementById('btn-gyro');
+  async function requestAndEnableGyro() {
+    try {
+      var state = await DeviceOrientationEvent.requestPermission();
+      sessionStorage.setItem('gyro_asked', '1');
+      if (state === 'granted') {
+        doEnableGyro();
+      } else {
+        toast('Permission denied. Go to Settings > Safari > Motion & Orientation Access.', 6000);
+      }
+    } catch (err) {
+      sessionStorage.setItem('gyro_asked', '1');
+      toast('Gyro error: ' + err.message, 4000);
+    }
+  }
+
+  function doEnableGyro() {
+    controls.enableMethod('deviceOrientation');
+    gyroEnabled = true;
+    var btn = document.getElementById('btn-gyro');
     btn.textContent = 'Gyro ON';
     btn.classList.add('active');
     toast('Gyroscope enabled — tilt your phone');
   }
 
-  function disableGyro() {
-    isGyroEnabled = false;
-    window.removeEventListener('deviceorientation', onDeviceOrientation, true);
-    gyroBaseAlpha = null;
-    gyroBaseBeta = null;
-    const btn = document.getElementById('btn-gyro');
+  function doDisableGyro() {
+    controls.disableMethod('deviceOrientation');
+    gyroEnabled = false;
+    var btn = document.getElementById('btn-gyro');
     btn.textContent = 'Enable Gyro';
     btn.classList.remove('active');
   }
 
-  function onDeviceOrientation(e) {
-    if (!isGyroEnabled || isDragging) return;
-    if (e.alpha === null || e.alpha === undefined) return;
+  // ── Scene loading ─────────────────────────────────────────────────────────
 
-    const alpha = e.alpha || 0;
-    const beta  = e.beta  || 0;
-    const gamma = e.gamma || 0;
-
-    if (gyroBaseAlpha === null) {
-      gyroBaseAlpha = alpha;
-      gyroBaseBeta = beta;
-    }
-
-    let dAlpha = alpha - gyroBaseAlpha;
-    let dBeta  = beta  - gyroBaseBeta;
-    if (dAlpha >  180) dAlpha -= 360;
-    if (dAlpha < -180) dAlpha += 360;
-
-    const isLandscape = window.innerWidth > window.innerHeight;
-    if (isLandscape) {
-      gyroYaw   = -dAlpha * (Math.PI / 180) * 0.85;
-      gyroPitch =  gamma  * (Math.PI / 180) * 0.6;
-    } else {
-      gyroYaw   = -dAlpha * (Math.PI / 180) * 0.85;
-      gyroPitch =  dBeta  * (Math.PI / 180) * 0.6;
-    }
-    gyroPitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, gyroPitch));
+  function createScene(url, onReady) {
+    var source = Marzipano.ImageUrlSource.fromString(url);
+    var s = viewer.createScene({
+      source: source,
+      geometry: geometry,
+      view: view,
+      pinFirstLevel: true
+    });
+    s.switchTo({}, onReady || function () {});
+    return s;
   }
 
+  function reloadScene() {
+    var badge = document.getElementById('refresh-badge');
+    badge.style.display = 'block';
+    setTimeout(function () { badge.style.display = 'none'; }, 3000);
+    scene = createScene('/image?v=' + Date.now());
+  }
+
+  // ── Polling for new renders ───────────────────────────────────────────────
+
   function startPolling() {
-    setInterval(async () => {
+    setInterval(async function () {
       try {
-        const res = await fetch('/api/status');
-        const data = await res.json();
+        var res = await fetch('/api/status');
+        var data = await res.json();
         if (data.version > renderVersion) {
           renderVersion = data.version;
-          reloadTexture();
+          reloadScene();
         }
-      } catch (e) { /* server may be restarting */ }
+      } catch (e) { /* server restarting */ }
     }, 2500);
   }
 
-  function reloadTexture() {
-    if (!sphere) return;
-    const badge = document.getElementById('refresh-badge');
-    badge.style.display = 'block';
-    setTimeout(() => { badge.style.display = 'none'; }, 3000);
+  // ── Init ─────────────────────────────────────────────────────────────────
 
-    const loader = new THREE.TextureLoader();
-    loader.load('/image?v=' + Date.now(), function(tex) {
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      const oldTex = sphere.material.map;
-      sphere.material.map = tex;
-      sphere.material.needsUpdate = true;
-      if (oldTex) oldTex.dispose();
+  function init() {
+    viewer = new Marzipano.Viewer(document.getElementById('pano'), {
+      controls: { mouseViewMode: 'drag' }
     });
-  }
 
-  document.getElementById('btn-reset').addEventListener('click', () => {
-    pointerYaw = 0;
-    pointerPitch = 0;
-    gyroBaseAlpha = null;
-    gyroBaseBeta = null;
-    toast('View reset');
-  });
+    geometry = new Marzipano.EquirectGeometry([{ width: 4096 }]);
+    limiter  = Marzipano.RectilinearView.limit.traditional(4096, 110 * Math.PI / 180);
+    view     = new Marzipano.RectilinearView(
+      { yaw: 0, pitch: 0, fov: 90 * Math.PI / 180 }, limiter
+    );
 
-  function onResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    controls = viewer.controls();
+    deviceOrientationMethod = new Marzipano.DeviceOrientationControlMethod();
+    // Register but start inactive — activated only after iOS permission granted
+    controls.registerMethod('deviceOrientation', deviceOrientationMethod, { active: false });
+
+    // Load scene; hide splash when ready
+    scene = createScene('/image?v=' + Date.now(), function () {
+      hideSplash();
+      maybeShowGyroPopup();
+    });
+
+    // Popup buttons
+    document.getElementById('popup-enable').addEventListener('click', function () {
+      document.getElementById('gyro-popup').style.display = 'none';
+      requestAndEnableGyro();
+    });
+    document.getElementById('popup-skip').addEventListener('click', function () {
+      sessionStorage.setItem('gyro_asked', '1');
+      document.getElementById('gyro-popup').style.display = 'none';
+    });
+
+    // Gyro button
+    var gyroBtn = document.getElementById('btn-gyro');
+    if (!('DeviceOrientationEvent' in window)) {
+      gyroBtn.textContent = 'No Gyro';
+      gyroBtn.classList.add('disabled');
+    } else {
+      gyroBtn.addEventListener('click', function () {
+        if (gyroEnabled) {
+          doDisableGyro();
+        } else if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+          requestAndEnableGyro();
+        } else {
+          doEnableGyro();
+        }
+      });
+    }
+
+    // Reset button
+    document.getElementById('btn-reset').addEventListener('click', function () {
+      view.setParameters({ yaw: 0, pitch: 0, fov: 90 * Math.PI / 180 });
+      toast('View reset');
+    });
+
+    startPolling();
   }
 
   window.addEventListener('load', init);
@@ -532,6 +445,8 @@ class Handler360(BaseHTTPRequestHandler):
             self._serve_image()
         elif path == '/api/status':
             self._serve_status()
+        elif path == '/marzipano.js':
+            self._serve_marzipano()
         elif path == '/favicon.ico':
             self.send_response(204)
             self.end_headers()
@@ -581,6 +496,26 @@ class Handler360(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _serve_marzipano(self):
+        addon_dir = os.path.dirname(os.path.abspath(__file__))
+        js_path = os.path.join(addon_dir, 'marzipano.js')
+        if not os.path.exists(js_path):
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            with open(js_path, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/javascript; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'max-age=86400')
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_response(500)
+            self.end_headers()
+
 
 def start_server(port=8765):
     global _server_instance, _server_thread
@@ -589,9 +524,12 @@ def start_server(port=8765):
         return get_local_ip(), _server_instance.server_address[1]
 
     ip = get_local_ip()
+    ssl_ctx = _make_ssl_context()
+
     for attempt_port in range(port, port + 20):
         try:
             srv = HTTPServer(("0.0.0.0", attempt_port), Handler360)
+            srv.socket = ssl_ctx.wrap_socket(srv.socket, server_side=True)
             _server_instance = srv
             break
         except OSError:

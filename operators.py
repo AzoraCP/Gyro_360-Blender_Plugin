@@ -168,7 +168,7 @@ class GYRO360_OT_StartServer(Operator):
             props.server_port = port
             props.server_running = True
 
-            url = f"http://{ip}:{port}"
+            url = f"https://{ip}:{port}"
             set_status(scene, f"Server running -> {url}", 'SUCCESS')
             self.report({'INFO'}, f"Mobile preview server started at {url}")
 
@@ -208,7 +208,7 @@ class GYRO360_OT_OpenBrowser(Operator):
     def execute(self, context):
         props = context.scene.gyro360
         if props.server_running and props.server_ip:
-            url = f"http://{props.server_ip}:{props.server_port}"
+            url = f"https://{props.server_ip}:{props.server_port}"
             webbrowser.open(url)
         else:
             self.report({'WARNING'}, "Server not running. Start Mobile Preview first.")
@@ -304,7 +304,7 @@ class GYRO360_OT_GenerateQR(Operator):
         try:
             import qrcode
 
-            url = f"http://{props.server_ip}:{props.server_port}"
+            url = f"https://{props.server_ip}:{props.server_port}"
             qr = qrcode.QRCode(
                 version=None,
                 error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -468,7 +468,7 @@ class GYRO360_OT_CopyURL(Operator):
     def execute(self, context):
         props = context.scene.gyro360
         if props.server_ip:
-            url = f"http://{props.server_ip}:{props.server_port}"
+            url = f"https://{props.server_ip}:{props.server_port}"
             context.window_manager.clipboard = url
             self.report({'INFO'}, f"Copied: {url}")
         return {'FINISHED'}
